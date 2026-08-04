@@ -150,9 +150,6 @@ simple-crm-lite/
 │   │   │   ├── SimpleCrmLiteApplication.java
 │   │   │   ├── controller/
 │   │   │   │   └── CustomerController.java
-│   │   │   ├── service/
-│   │   │   │   ├── CustomerService.java
-│   │   │   │   └── CustomerServiceImpl.java
 │   │   │   ├── repository/
 │   │   │   │   └── CustomerRepository.java
 │   │   │   └── model/
@@ -170,6 +167,7 @@ simple-crm-lite/
 - ✅ We have a working Spring Boot app
 - ✅ We have Dockerfile
 - ✅ We have docker-compose.yml
+- ✅ Controller talks directly to `CustomerRepository` (no service layer — kept simple, as in Lesson 4.8)
 - ❓ We need to add tests for CI
 
 ---
@@ -227,7 +225,7 @@ src/test/java/com/example/simplecrmlite/controller/CustomerControllerTest.java
 package com.example.simplecrmlite.controller;
 
 import com.example.simplecrmlite.model.Customer;
-import com.example.simplecrmlite.service.CustomerService;
+import com.example.simplecrmlite.repository.CustomerRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -253,7 +251,7 @@ public class CustomerControllerTest {
     private MockMvc mockMvc;
 
     @MockBean
-    private CustomerService customerService;
+    private CustomerRepository customerRepository;
 
     /**
      * Test: GET /customers should return list of customers
@@ -275,8 +273,8 @@ public class CustomerControllerTest {
 
         List<Customer> customers = Arrays.asList(customer1, customer2);
 
-        // Mock the service to return test data
-        when(customerService.getAllCustomers()).thenReturn(customers);
+        // Mock the repository to return test data
+        when(customerRepository.findAll()).thenReturn(customers);
 
         // Act & Assert - Make request and verify response
         mockMvc.perform(get("/customers")
@@ -293,7 +291,7 @@ public class CustomerControllerTest {
 **Understanding the Test:**
 
 1. **`@WebMvcTest`** - Tests only the web layer (controller)
-2. **`@MockBean`** - Creates a fake CustomerService (we don't need real database for this test)
+2. **`@MockBean`** - Creates a fake `CustomerRepository` (we don't need a real database for this test — matches how `CustomerController` calls `CustomerRepository` directly, same as in Lesson 4.8)
 3. **`mockMvc.perform(get(...))`** - Simulates HTTP GET request
 4. **`andExpect(...)`** - Verifies the response
 
@@ -430,6 +428,11 @@ Add the test job to your `.circleci/config.yml` (below the build job):
             - maven-deps-
       
       - run:
+          name: Install PostgreSQL client
+          command: |
+            sudo apt-get update && sudo apt-get install -y postgresql-client
+      
+      - run:
           name: Wait for PostgreSQL
           command: |
             for i in {1..10}; do
@@ -459,9 +462,10 @@ Add the test job to your `.circleci/config.yml` (below the build job):
 **What This Does:**
 1. Starts TWO containers: Java (main) + PostgreSQL (database)
 2. Sets environment variables for database connection
-3. Waits for PostgreSQL to be ready
-4. Runs `mvn test` (your test will run against real database)
-5. Saves test results
+3. Installs the PostgreSQL client tools (`pg_isready` isn't included in the `cimg/openjdk` image by default, so this step adds it)
+4. Waits for PostgreSQL to be ready
+5. Runs `mvn test` (your test will run against real database)
+6. Saves test results
 
 **Important:** Even though our unit test doesn't need database, this setup prepares us for integration tests later!
 
@@ -582,6 +586,10 @@ jobs:
           keys:
             - maven-deps-{{ checksum "pom.xml" }}
             - maven-deps-
+      - run:
+          name: Install PostgreSQL client
+          command: |
+            sudo apt-get update && sudo apt-get install -y postgresql-client
       - run:
           name: Wait for PostgreSQL
           command: |
@@ -891,6 +899,8 @@ for i in {1..15}; do  # Changed from 10 to 15
 environment:
   SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/simplecrmlite
 ```
+
+**Solution 3:** Make sure the "Install PostgreSQL client" step ran successfully before the wait step — without it, `pg_isready` won't be found at all, which looks similar to a connection error in the logs but is actually a missing-command error.
 
 ---
 
