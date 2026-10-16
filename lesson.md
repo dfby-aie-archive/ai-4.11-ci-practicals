@@ -7,6 +7,7 @@ By the end of this lesson, you will be able to:
 2. **Create** CircleCI workflows with build, test, and publish jobs
 3. **Configure** PostgreSQL service in CircleCI for running tests
 4. **Push** Docker images to Docker Hub automatically from a CI pipeline
+5. **Deploy** the CI-built image and a PostgreSQL database to Railway on your own (challenge)
 
 ---
 
@@ -17,6 +18,7 @@ Before starting this coaching session, ensure you have:
 ### ✅ Completed Previous Lessons
 - [ ] Lesson 4.7: Continuous Integration (CircleCI basics)
 - [ ] Lesson 4.8: Containerized simple-crm-lite application
+- [ ] Lesson 4.10: Deployed to Railway from Docker Hub, with PostgreSQL (for the Part 6 challenge)
 
 ### ✅ Accounts Ready
 - [ ] GitHub account (free)
@@ -50,7 +52,7 @@ In Lesson 4.7, you learned Continuous Integration using CircleCI with the devops
 - Every code push triggers automatic testing
 - Bugs are caught immediately
 - Docker images are built automatically
-- Ready for deployment (Lesson 4.12!)
+- Ready for deployment - you'll deploy it to Railway at the end of this lesson
 
 ---
 
@@ -193,22 +195,27 @@ mkdir -p src/test/java/com/example/simplecrmlite/controller
 
 ### Step 2: Add Test Dependency in pom.xml
 
-Open `pom.xml` and verify you have the test dependency:
+Open `pom.xml` and verify you have the test dependencies. simple-crm-lite uses **Spring Boot 4**, which has a test starter for each main starter:
 
 ```xml
 <dependencies>
     <!-- Other dependencies... -->
-    
-    <!-- Spring Boot Test Dependency -->
+
+    <!-- Spring Boot 4 test dependencies -->
     <dependency>
         <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-test</artifactId>
+        <artifactId>spring-boot-starter-webmvc-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa-test</artifactId>
         <scope>test</scope>
     </dependency>
 </dependencies>
 ```
 
-**Note:** This should already be there from when you created the project. If not, add it!
+**Note:** These should already be there from when the project was created. If not, add them!
 
 ---
 
@@ -228,9 +235,9 @@ import com.example.simplecrmlite.model.Customer;
 import com.example.simplecrmlite.repository.CustomerRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.Arrays;
@@ -250,7 +257,7 @@ public class CustomerControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @MockBean
+    @MockitoBean
     private CustomerRepository customerRepository;
 
     /**
@@ -291,20 +298,22 @@ public class CustomerControllerTest {
 **Understanding the Test:**
 
 1. **`@WebMvcTest`** - Tests only the web layer (controller)
-2. **`@MockBean`** - Creates a fake `CustomerRepository` (we don't need a real database for this test — matches how `CustomerController` calls `CustomerRepository` directly, same as in Lesson 4.8)
+2. **`@MockitoBean`** - Creates a fake `CustomerRepository` (we don't need a real database for this test — matches how `CustomerController` calls `CustomerRepository` directly, same as in Lesson 4.8)
 3. **`mockMvc.perform(get(...))`** - Simulates HTTP GET request
 4. **`andExpect(...)`** - Verifies the response
 
 **This is a UNIT test - it doesn't need a database!**
 
+> **Spring Boot 4 note:** `@WebMvcTest` now lives in `org.springframework.boot.webmvc.test.autoconfigure` (as in Lesson 4.7), and `@MockBean` has been removed - use `@MockitoBean` instead. Older tutorials still show the Spring Boot 3 versions.
+
 ---
 
 ### Step 4: Run the Test Locally
 
-**Run the test to make sure it works:**
+**Run the controller test to make sure it works:**
 
 ```bash
-mvn test
+mvn test -Dtest=CustomerControllerTest
 ```
 
 **Expected output:**
@@ -312,6 +321,8 @@ mvn test
 [INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
+
+**Why `-Dtest=CustomerControllerTest`?** The project also has `SimpleCrmLiteApplicationTests`, which starts the whole application - and the application needs a PostgreSQL database. You don't have one set up for local tests, so we run only the controller test here. In CircleCI, the test job gives the app a PostgreSQL database, so **both** tests run there.
 
 ---
 
@@ -467,7 +478,7 @@ Add the test job to your `.circleci/config.yml` (below the build job):
 5. Runs `mvn test` (your test will run against real database)
 6. Saves test results
 
-**Important:** Even though our unit test doesn't need database, this setup prepares us for integration tests later!
+**Why a database?** `CustomerControllerTest` doesn't need one, but `SimpleCrmLiteApplicationTests` starts the whole application, which connects to PostgreSQL. The PostgreSQL container gives it a real database in CI.
 
 ---
 
@@ -501,7 +512,7 @@ Add the publish job to your `.circleci/config.yml`:
           name: Push to Docker Hub
           command: |
             echo "Logging in to Docker Hub..."
-            echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+            echo $DOCKER_TOKEN | docker login -u $DOCKER_USERNAME --password-stdin
             echo "Pushing image to Docker Hub..."
             docker push $DOCKER_USERNAME/simple-crm-lite:latest
 ```
@@ -530,6 +541,7 @@ workflows:
           requires:
             - build
       - publish:
+          context: docker-hub
           requires:
             - test
 ```
@@ -630,7 +642,7 @@ jobs:
           name: Push to Docker Hub
           command: |
             echo "Logging in to Docker Hub..."
-            echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+            echo $DOCKER_TOKEN | docker login -u $DOCKER_USERNAME --password-stdin
             echo "Pushing image to Docker Hub..."
             docker push $DOCKER_USERNAME/simple-crm-lite:latest
 
@@ -642,6 +654,7 @@ workflows:
           requires:
             - build
       - publish:
+          context: docker-hub
           requires:
             - test
 ```
@@ -681,43 +694,33 @@ git push origin main
 2. Select **"Use Existing Config"**
 3. Click **"Start Building"**
 
-**CircleCI will try to run the pipeline, but it will FAIL at the publish job!**
-
-**Why?** We haven't added Docker Hub credentials yet.
+**CircleCI starts running the pipeline.** If your `docker-hub` context from Lesson 4.7 is set up, all three jobs can pass. If the publish job fails, check your Docker Hub credentials in Step 3.
 
 ---
 
-### Step 3: Add Docker Hub Credentials
+### Step 3: Check Your Docker Hub Credentials
 
-The publish job needs your Docker Hub username and password.
+The publish job uses the **`docker-hub` context** you created in Lesson 4.7 (`context: docker-hub` in the workflow). It holds two environment variables:
 
-**3.1: Get Your Docker Hub Credentials**
+| Variable | Value |
+|---|---|
+| `DOCKER_USERNAME` | Your Docker Hub username (e.g. `john123`) |
+| `DOCKER_TOKEN` | Your Docker Hub personal access token |
 
-- **Username:** Your Docker Hub username (e.g., `john123`)
-- **Password:** Your Docker Hub password
+Contexts belong to your CircleCI organisation, so every project can reuse them - no need to add the credentials again.
 
-**IMPORTANT:** Never put passwords in code! We'll use CircleCI environment variables.
+**3.1: Check the context**
 
-**3.2: Add Environment Variables in CircleCI**
+1. In CircleCI, click **"Organization Settings"**
+2. Click **"Contexts"** and open **`docker-hub`**
+3. Check that both `DOCKER_USERNAME` and `DOCKER_TOKEN` are there
 
-1. In CircleCI, go to your `simple-crm-lite` project
-2. Click **"Project Settings"** (top right)
-3. Click **"Environment Variables"** (left sidebar)
-4. Click **"Add Environment Variable"**
+**3.2: Token expired or context missing?**
 
-**Add these TWO variables:**
+1. In Docker Hub, go to **Account settings → Personal access tokens** and generate a new token (`Read & Write`)
+2. In the `docker-hub` context, add or update `DOCKER_TOKEN` with the new token (and `DOCKER_USERNAME` if missing)
 
-**Variable 1:**
-- **Name:** `DOCKER_USERNAME`
-- **Value:** Your Docker Hub username (e.g., `john123`)
-- Click **"Add Environment Variable"**
-
-**Variable 2:**
-- **Name:** `DOCKER_PASSWORD`
-- **Value:** Your Docker Hub password
-- Click **"Add Environment Variable"**
-
-**Security Note:** CircleCI encrypts these values. They're safe!
+**IMPORTANT:** Never put passwords or tokens in code! Always use a context or environment variables.
 
 ---
 
@@ -769,7 +772,7 @@ git push origin main
 **Test Job:**
 - See "Waiting for PostgreSQL"
 - See "PostgreSQL is ready!"
-- See "Tests run: 1, Failures: 0"
+- See "Tests run: 2, Failures: 0" (the controller test and `SimpleCrmLiteApplicationTests`)
 - Job turns green ✅
 
 **Publish Job:**
@@ -827,6 +830,8 @@ docker run -d \
   --name simple-crm-app \
   -p 8080:8080 \
   -e SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5433/simplecrmlite \
+  -e SPRING_DATASOURCE_USERNAME=postgres \
+  -e SPRING_DATASOURCE_PASSWORD=password \
   YOUR-DOCKERHUB-USERNAME/simple-crm-lite:latest
 
 # Wait 10 seconds for app to start
@@ -836,7 +841,9 @@ sleep 10
 curl http://localhost:8080/customers
 ```
 
-**You should see the customer list!**
+**You should see the customer list!** (An empty list `[]` is fine - the database is new.)
+
+> The app needs all three database variables - `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`. If any is missing, it fails to start with `Could not resolve placeholder`.
 
 **This proves:** The Docker image built by CI works perfectly!
 
@@ -868,6 +875,31 @@ docker rm simple-crm-app simple-crm-db
 - Bugs caught immediately
 
 **This is how professional teams work!**
+
+---
+
+## Part 6 - Challenge: Deploy simple-crm-lite to Railway
+
+Your CI pipeline has published a Docker image of simple-crm-lite to Docker Hub. **It's ready for deployment!**
+
+Deploy it to Railway, together with a PostgreSQL database.
+
+> **No step-by-step instructions this time.** Use **Lesson 4.10** as your reference: Part 3 (deploy to Railway from Docker Hub) and Part 4 (add a PostgreSQL database and connect it). Working it out yourself is the point of this challenge.
+
+**Your image:**
+
+```
+YOUR-DOCKERHUB-USERNAME/simple-crm-lite:latest
+```
+
+**You're done when:**
+
+- [ ] simple-crm-lite and a PostgreSQL database run in the same Railway project
+- [ ] Your app has a public Railway URL
+- [ ] `GET /customers` on your Railway URL returns JSON (an empty list `[]` at first)
+- [ ] You can create a customer with `POST /customers` and see it in `GET /customers`
+
+**Tip:** Use the same requests you used to test the API in Lesson 4.8 - just replace `http://localhost:8080` with your Railway URL.
 
 ---
 
@@ -909,9 +941,10 @@ environment:
 **Cause:** Wrong Docker Hub credentials or image name
 
 **Solution:**
-1. Verify environment variables in CircleCI:
+1. Verify the `docker-hub` context in CircleCI (Organization Settings → Contexts):
    - `DOCKER_USERNAME` = your exact Docker Hub username
-   - `DOCKER_PASSWORD` = your correct password
+   - `DOCKER_TOKEN` = a valid personal access token with `Read & Write` access
+   - The workflow has `context: docker-hub` on the publish job
 2. Verify image name in config:
    ```yml
    docker build -t $DOCKER_USERNAME/simple-crm-lite:latest .
@@ -922,10 +955,10 @@ environment:
 ### Issue 4: Publish job fails - "unauthorized: incorrect username or password"
 
 **Solution:**
-1. Go to CircleCI Project Settings → Environment Variables
-2. Delete `DOCKER_PASSWORD`
-3. Re-add it with correct password
-4. Rerun workflow
+1. Generate a new Docker Hub personal access token (your old one may have expired)
+2. In CircleCI, go to Organization Settings → Contexts → `docker-hub`
+3. Update `DOCKER_TOKEN` with the new token (no spaces)
+4. Rerun the workflow
 
 ---
 
@@ -989,6 +1022,8 @@ docker run -d \
   --network simple-crm-network \
   -p 8080:8080 \
   -e SPRING_DATASOURCE_URL=jdbc:postgresql://simple-crm-db:5432/simplecrmlite \
+  -e SPRING_DATASOURCE_USERNAME=postgres \
+  -e SPRING_DATASOURCE_PASSWORD=password \
   YOUR-DOCKERHUB-USERNAME/simple-crm-lite:latest
 
 # Test
@@ -1005,9 +1040,10 @@ curl http://localhost:8080/customers
 2. ✅ Created a unit test for CustomerController
 3. ✅ Created complete CircleCI pipeline with 3 jobs
 4. ✅ Configured PostgreSQL service in CI
-5. ✅ Set up Docker Hub credentials securely
+5. ✅ Reused your Docker Hub credentials securely with a CircleCI context
 6. ✅ Ran successful CI pipeline
 7. ✅ Published Docker image automatically
+8. ✅ (Challenge) Deployed simple-crm-lite and PostgreSQL to Railway
 
 ### Key Takeaways
 
@@ -1024,7 +1060,7 @@ curl http://localhost:8080/customers
 **3. Docker + CI = Deployment Ready:**
 - Every successful build creates a Docker image
 - Image is on Docker Hub, ready to deploy
-- In Lesson 4.12, we'll deploy automatically!
+- You deployed it to Railway yourself, using Lesson 4.10 as your guide
 
 **4. Professional workflow:**
 - This is how real companies work
